@@ -23,7 +23,7 @@ class DeadCodeTracker:
         device : str or torch.device
             Device to store the tracking tensor on
         """
-        self.alive_features = torch.zeros(nb_concepts, dtype=torch.bool, device=device)
+        # self.alive_features = torch.zeros(nb_concepts, dtype=torch.bool, device=device)
 
         self.tracked_tokens = int(tracked_tokens)
         self.tokens_seen = 0
@@ -55,7 +55,7 @@ class DeadCodeTracker:
         pos = torch.arange(n, device=z.device, dtype=torch.int32)
         last_pos = torch.where(z > 0, pos[:, None], self.tracked_tokens).amin(dim=0)
 
-        self.last_active = torch.minimum(torch.minimum(self.last_active + n, last_pos), self.tracked_tokens)
+        self.last_active = torch.clamp(torch.minimum(self.last_active + n, last_pos), max=self.tracked_tokens)
 
         self.tokens_seen += n
 
