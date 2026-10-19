@@ -105,7 +105,8 @@ def _log_metrics(monitoring, logs, model, z, loss, optimizer):
 
 
 def train_sae(model, dataloader, criterion, optimizer, scheduler=None,
-              nb_epochs=20, clip_grad=1.0, monitoring=1, device="cpu"):
+              nb_epochs=20, clip_grad=1.0, monitoring=1, device="cpu",
+              dead_code_history=int(1e5)):
     """
     Train a Sparse Autoencoder (SAE) model.
 
@@ -158,12 +159,14 @@ def train_sae(model, dataloader, criterion, optimizer, scheduler=None,
             optimizer.zero_grad()
 
             z_pre, z, x_hat = model(x)
-            loss = criterion(x, x_hat, z_pre, z, model.get_dictionary())
 
             # init dead code tracker with first batch
             if dead_tracker is None:
-                dead_tracker = DeadCodeTracker(z.shape[1], device)
-            dead_tracker.update(z)
+                dead_tracker = DeadCodeTracker(z.shape[1], device, tracked_tokens=dead_code_history)
+            dead_tracker.update(z>0)
+            
+            loss = criterion(x, x_hat, z_pre, z, model.get_dictionary(), 
+                             dead_codes=dead_tracker.get_dead_indices())
 
             loss.backward()
 
