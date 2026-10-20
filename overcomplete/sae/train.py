@@ -10,6 +10,7 @@ from einops import rearrange
 
 from ..metrics import l2, r2_score, l0_eps
 from .trackers import DeadCodeTracker
+from .archetypal_dictionary import RelaxedArchetypalDictionary
 
 
 def extract_input(batch):
@@ -142,6 +143,10 @@ def train_sae(model, dataloader, criterion, optimizer, scheduler=None,
     """
     logs = defaultdict(list)
 
+    scaler = torch.amp.GradScaler(device)
+
+    dead_tracker = None
+
     for epoch in range(nb_epochs):
         model.train()
 
@@ -151,29 +156,33 @@ def train_sae(model, dataloader, criterion, optimizer, scheduler=None,
         epoch_sparsity = 0.0
         batch_count = 0
 
-        dead_tracker = None
 
         for batch in dataloader:
             batch_count += 1
             x = extract_input(batch).to(device, non_blocking=True)
             optimizer.zero_grad()
 
-            z_pre, z, x_hat = model(x)
+            with torch.autocast(device_type=str(device), dtype=torch.float16):
+                z_pre, z, x_hat = model(x)
 
-            # init dead code tracker with first batch
-            if dead_tracker is None:
-                dead_tracker = DeadCodeTracker(z.shape[1], device, tracked_tokens=dead_code_history)
-            dead_tracker.update(z>0)
-            
-            loss = criterion(x, x_hat, z_pre, z, model.get_dictionary(), 
-                             dead_codes=dead_tracker.get_dead_indices())
+                # init dead code tracker with first batch
+                if dead_tracker is None:
+                    dead_tracker = DeadCodeTracker(z.shape[1], device, tracked_tokens=dead_code_history)
+                dead_tracker.update(z>0)
+                
+                loss = criterion(x, x_hat, z_pre, z, model.get_dictionary(), 
+                                dead_code_indices=dead_tracker.get_dead_indices() if dead_tracker.warmed_up else None)
 
-            loss.backward()
+            scaler.scale(loss).backward()
 
             if clip_grad:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
 
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
+            if isinstance(model.dictionary, RelaxedArchetypalDictionary):
+                model.dictionary.project()  # Only called once if the weights changed.
+
 
             if scheduler is not None:
                 scheduler.step()
@@ -183,6 +192,8 @@ def train_sae(model, dataloader, criterion, optimizer, scheduler=None,
                 epoch_error += _compute_reconstruction_error(x, x_hat)
                 epoch_sparsity += l0_eps(z, 0).sum().item()
                 _log_metrics(monitoring, logs, model, z, loss, optimizer)
+                
+            # optimizer.zero_grad()
 
         if monitoring and batch_count > 0:
             avg_loss = epoch_loss / batch_count

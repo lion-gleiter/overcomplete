@@ -63,7 +63,8 @@ class SAE(BaseDictionaryLearning):
     """
 
     def __init__(self, input_shape, nb_concepts, encoder_module=None,
-                 dictionary_params=None, device='cpu'):
+                 dictionary_params=None, device='cpu',
+                 use_pre_bias=False):
         assert isinstance(encoder_module, (str, nn.Module, type(None)))
         assert isinstance(input_shape, (int, tuple, list))
 
@@ -95,6 +96,11 @@ class SAE(BaseDictionaryLearning):
         else:
             raise ValueError("Input shape must be 1D, 2D or 3D.")
 
+        self.use_pre_bias = use_pre_bias
+        if self.use_pre_bias:
+            self.pre_bias = nn.Parameter(torch.zeros(input_shape, device=device))
+
+
         self.dictionary = DictionaryLayer(in_dim, nb_concepts, device=device, **(dictionary_params or {}))
 
     def get_dictionary(self):
@@ -122,6 +128,7 @@ class SAE(BaseDictionaryLearning):
         SAEOuput
             Return the pre_codes (z_pre), codes (z) and reconstructed input tensor (x_hat).
         """
+        # with torch.autocast(device_type=str(self.device), dtype=torch.float16):
         pre_codes, codes = self.encode(x)
 
         x_reconstructed = self.decode(codes)
@@ -144,6 +151,8 @@ class SAE(BaseDictionaryLearning):
         codes : torch.Tensor
             Codes, latent representation tensor (z) of shape (batch_size, nb_components).
         """
+        if self.use_pre_bias:
+            x = x - self.pre_bias
         return self.encoder(x)
 
     def decode(self, z):
@@ -160,7 +169,11 @@ class SAE(BaseDictionaryLearning):
         torch.Tensor
             Reconstructed input tensor of shape (batch_size, input_size).
         """
-        return self.dictionary(z)
+        
+        if self.use_pre_bias:
+            return self.dictionary(z) + self.pre_bias
+        else:
+            return self.dictionary(z)
 
     def fit(self, x):
         """
@@ -222,4 +235,34 @@ class SAE(BaseDictionaryLearning):
             weight_init=weight_init,
             device=self.device
         )
+        return self
+
+    @torch.no_grad()
+    def init_pre_bias(self, x, n_iter=100, eps=1e-8, tol=1e-6):
+        """
+        Initialize pre_bias with the geometric median of the data (Weiszfeld's algorithm).
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            A representative sample of the data, shape (N, *input_shape).
+            Use a subsample (e.g. a few tens of thousands of points) for large datasets.
+        """
+        if not self.use_pre_bias:
+            raise RuntimeError("Model was created with use_pre_bias=False.")
+
+        flat = x.to(self.pre_bias.device, dtype=self.pre_bias.dtype).reshape(x.shape[0], -1)
+
+        median = flat.mean(dim=0)  # start from the arithmetic mean
+        for _ in range(n_iter):
+            dist = torch.linalg.norm(flat - median, dim=1).clamp_min(eps)
+            w = 1.0 / dist
+            new_median = (w[:, None] * flat).sum(dim=0) / w.sum()
+
+            converged = torch.linalg.norm(new_median - median) <= tol * torch.linalg.norm(median).clamp_min(eps)
+            median = new_median
+            if converged:
+                break
+
+        self.pre_bias.copy_(median.reshape(self.pre_bias.shape))
         return self

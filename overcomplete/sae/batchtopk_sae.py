@@ -41,9 +41,9 @@ class BatchTopKSAE(SAE):
     """
 
     def __init__(self, input_shape, nb_concepts, top_k=None, threshold_momentum=0.9,
-                 encoder_module=None, dictionary_params=None, device='cpu'):
+                 encoder_module=None, dictionary_params=None, device='cpu', **kwargs):
         super().__init__(input_shape, nb_concepts, encoder_module,
-                         dictionary_params, device)
+                         dictionary_params, device, **kwargs)
         self.top_k = top_k if top_k is not None else max(nb_concepts // 10, 1)
         self.threshold_momentum = threshold_momentum
         self.running_threshold = None
