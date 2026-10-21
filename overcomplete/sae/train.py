@@ -211,7 +211,7 @@ def train_sae(model, dataloader, criterion, optimizer, scheduler=None,
             print(f"Epoch[{epoch+1}/{nb_epochs}], Loss: {avg_loss:.4f}, "
                   f"R2: {avg_error:.4f}, L0: {avg_sparsity:.4f}, "
                   f"Dead Features: {dead_ratio*100:.1f}%, "
-                  f"Time: {epoch_duration:.4f} seconds")
+                  f"Time: {epoch_duration:.4f} seconds", flush=True)
 
     return logs
 
