@@ -42,12 +42,14 @@ class RelaxedArchetypalDictionary(nn.Module):
         points, delta=1.0, use_multiplier=True,
         device="cpu",
         seed=0,
+        W_activation='relu',
     ):
         super().__init__()
         self.in_dimensions = in_dimensions
         self.nb_concepts = nb_concepts
         self.device = device
         self.delta = delta
+        self.W_activation = W_activation
 
         # follow the eq.4 of the paper
         self.register_buffer("C", points.to(self.device), )
@@ -90,7 +92,10 @@ class RelaxedArchetypalDictionary(nn.Module):
         for s in range(0, n_atoms, 1024):               # chunked to save memory
             sim = C[anchors[s:s + 1024]] @ C.T          # (chunk, n_cand)
             top_sim, top_idx = sim.topk(n_neighbors, dim=1)   # includes the anchor itself
-            w = torch.softmax(top_sim / temperature, dim=1)
+            if self.W_activation == 'relu':
+                w = torch.softmax(top_sim / temperature, dim=1)
+            else:
+                w = top_sim / temperature
             W[s:s + 1024].scatter_(1, top_idx, w)
 
         self.W.data.copy_(W)
@@ -117,8 +122,9 @@ class RelaxedArchetypalDictionary(nn.Module):
     @torch.no_grad()
     def project(self):
         with torch.autocast(device_type=str(self.device), dtype=torch.float16):
-            self.W.clamp_(min=0)  # ReLU
-            self.W.div_(self.W.sum(dim=-1, keepdim=True) + 1e-8)
+            if self.W_activation == 'relu':
+                self.W.clamp_(min=0)  # ReLU
+                self.W.div_(self.W.sum(dim=-1, keepdim=True) + 1e-8)
             norm_Lambda = self.Relax.norm(dim=-1, keepdim=True)
             self.Relax.mul_(torch.where(norm_Lambda > 0, 
                                         (self.delta / norm_Lambda).clamp(max=1), 
@@ -150,8 +156,14 @@ class RelaxedArchetypalDictionary(nn.Module):
             # compute the dictionary as a convex combination plus relaxation
             # D = self.W @ self.C + self.Relax
             # return D * torch.exp(self.multiplier)
+
+            if self.W_activation == 'relu':
+                W = self.W
+            else:
+                W = self.W_activation(self.W)
+
             with torch.autocast(device_type=str(self.device), dtype=torch.float16):
-                return (self.W @ self.C + self.Relax) * torch.exp(self.multiplier)
+                return (W @ self.C + self.Relax) * torch.exp(self.multiplier)
         else:
             # we are in .eval() mode, return the fused dictionary
             assert self._fused_dictionary is not None, "Dictionary is not initialized."

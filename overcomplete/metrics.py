@@ -469,6 +469,35 @@ def cosine_hungarian_loss(dictionary1, dictionary2):
 
     return float(loss)
 
+def cosine_hungarian_distances(dictionary1, dictionary2):
+    """
+    Compute the cosine Hungarian loss between two dictionaries. A score of 0 indicates
+    that the two dictionaries are identical up to a permutation. A score of 'dim' indicates
+    that the two dictionaries are orthogonal. To have a normalized score, we recommend to
+    divide the score by the dimension of the dictionary.
+
+    Parameters
+    ----------
+    dictionary1 : torch.Tensor
+        First dictionary tensor of shape (num_codes, dim).
+    dictionary2 : torch.Tensor
+        Second dictionary tensor of shape (num_codes, dim).
+
+    Returns
+    -------
+    float
+        Cosine Hungarian loss.
+    """
+    assert dictionary1.shape == dictionary2.shape, "Input tensors must have the same shape"
+    assert len(dictionary1.shape) == 2, "Input tensors must be 2D"
+
+    cost_matrix = _cosine_distance_matrix(dictionary1, dictionary2).cpu().numpy()
+
+    row_ind, col_ind = linear_sum_assignment(cost_matrix)
+    loss = cost_matrix[row_ind, col_ind]
+
+    return loss
+
 
 def dictionary_collinearity(dictionary):
     """

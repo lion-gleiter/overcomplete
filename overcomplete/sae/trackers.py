@@ -48,12 +48,12 @@ class DeadCodeTracker:
             Encoded tensor of shape (batch_size, n_features)
         """
         # self.alive_features |= (z > 0).any(dim=0)
-        n = z.shape[0]
+        n = z.detach().shape[0]
 
         # 1-based position within the batch of the last token where each
         # feature fires (0 if it never fires in this batch).
         pos = torch.arange(n, device=z.device, dtype=torch.int32)
-        last_pos = torch.where(z > 0, pos[:, None], self.tracked_tokens).amin(dim=0)
+        last_pos = torch.where(z.detach() > 0, pos[:, None], self.tracked_tokens).amin(dim=0)
 
         self.last_active = torch.clamp(torch.minimum(self.last_active + n, last_pos), max=self.tracked_tokens)
 

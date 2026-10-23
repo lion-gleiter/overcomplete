@@ -196,6 +196,17 @@ def reanimation_regularizer(x, x_hat, pre_codes, codes, dictionary, penalty=0.1)
     return reg
 
 
+def ra_sae_criterion(x, x_hat, pre_codes, codes, dictionary, dead_code_indices, aux_weight=1e-3):
+    loss = (x - x_hat).square().mean()
+
+    if (dead_code_indices is not None) and len(dead_code_indices) > 0:
+        # add reanimation loss to avoid dead codes:
+        dead_pre_codes = pre_codes[:, dead_code_indices]
+        reanim_loss = dead_pre_codes.mean()
+        loss -= reanim_loss * aux_weight
+
+    return loss
+
 
 def top_k_auxiliary_loss(x, x_hat, pre_codes, codes, dictionary, dead_code_indices, penalty=1/32.0, top_k_aux=512):
     """
@@ -234,6 +245,97 @@ def top_k_auxiliary_loss(x, x_hat, pre_codes, codes, dictionary, dead_code_indic
 
     residual = x - x_hat
     mse = residual.square().mean()
+
+    if dead_code_indices is None:
+        return mse
+
+    # print(pre_codes.shape, pre_codes[:5, :5])
+    dead_pre_codes = pre_codes[:, dead_code_indices]
+    # print('dead_code_indices', dead_code_indices)
+    # print(dead_pre_codes.shape, dead_pre_codes[:5, :5])
+    if len(dead_code_indices) <= top_k_aux:
+        pre_codes = torch.zeros_like(pre_codes).scatter(
+            -1, 
+            dead_code_indices.repeat(pre_codes.shape[0], 1),
+            torch.relu(dead_pre_codes)
+        )
+    else:
+        auxiliary_topk = torch.topk(dead_pre_codes, k=top_k_aux, dim=1)
+        dead_pre_codes = torch.zeros_like(dead_pre_codes).scatter(
+            -1, 
+            auxiliary_topk.indices,
+            torch.relu(auxiliary_topk.values)
+        )
+        # print('after aux top k', dead_pre_codes.shape, dead_pre_codes[:5, :5])
+        pre_codes = torch.zeros_like(pre_codes).scatter(
+            -1, 
+            dead_code_indices.repeat(pre_codes.shape[0], 1),
+            dead_pre_codes
+        )
+    # print('pre_codes after aux top k', pre_codes.shape, pre_codes[:5, :5])
+    # pre_codes[:, dead_code_indices] = dead_pre_codes
+    
+    residual_hat = pre_codes @ dictionary
+    # print('residual_hat', residual_hat.shape, residual_hat[:5, :5])
+    auxilary_mse = (residual - residual_hat).square().mean()
+    # print('mse', mse)
+    # print('auxilary_mse', auxilary_mse)
+
+    loss = mse + penalty * auxilary_mse
+
+    return loss
+
+
+def top_k_plus_n_auxiliary_loss(x, x_hat, pre_codes, codes, dictionary, dead_code_indices, penalty=1/32.0, top_k_aux=512, top_n=1):
+    """
+    The Top-K Auxiliary loss (AuxK) according to https://arxiv.org/pdf/2406.04093.
+
+    The loss is defined in the original Top-K SAE paper:
+        "Scaling and evaluating sparse autoencoders"
+        by Gao et al. (2024).
+
+    Similar to Ghost-grads, it consist in trying to "revive" the dead codes
+    by trying the predict the residual using the 50% of the top non choosen codes.
+
+    Loss = ||x - x_hat||^2 + penalty * ||x - (x_hat D * top_half(z_pre - z)||^2
+
+    @tfel the order actually matter here! residual is x - x_hat and
+    should be in this specific order.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Input tensor.
+    x_hat : torch.Tensor
+        Reconstructed tensor.
+    pre_codes : torch.Tensor
+        Encoded tensor before activation function.
+    codes : torch.Tensor
+        Encoded tensor.
+    dictionary : torch.Tensor
+        Dictionary tensor.
+    penalty : float, optional
+        Penalty coefficient.
+    """
+    # select the 50% of non choosen codes and predict the residual
+    # using those non choosen codes
+    # the code choosen are the non-zero element of codes
+
+    residual = x - x_hat
+    mse = residual.square().mean()
+
+    # Top n loss on samples without activation
+    if top_n > 0:
+        inactive_samples = ~(codes.detach() > 0).any(dim=1)
+        if inactive_samples.any():
+            auxiliary_topn = torch.topk(pre_codes[inactive_samples, :], k=top_n, dim=1)
+            aux_pre_codes = torch.zeros_like(pre_codes[inactive_samples, :]).scatter(
+                -1, 
+                auxiliary_topn.indices,
+                torch.relu(auxiliary_topn.values)
+            )
+            x_hat_topn = aux_pre_codes @ dictionary
+            mse += (x[inactive_samples, :] - x_hat_topn).square().mean()
 
     if dead_code_indices is None:
         return mse
